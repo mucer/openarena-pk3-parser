@@ -70,7 +70,10 @@ export class CacheManager {
                         entry.buffer()
                             .then(buf => {
                                 const shaders = parseShaderFile(buf.toString('utf8'));
-                                shaders.forEach(s => this.shaders[s.name] = s);
+                                shaders.forEach(s => {
+                                    Object.assign(s, { file: entry.file, path: entry.path });
+                                    this.shaders[s.name] = s;
+                                });
                             })
                             .catch(onError);
                     }
