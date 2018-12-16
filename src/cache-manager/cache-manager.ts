@@ -1,8 +1,8 @@
 import * as fs from "fs-extra";
-import { BspFile, parseBspFile, parseShaderFile, Shader } from "openarena-bsp-parser";
+import { BspFile, parseBspFile, parseShaders, Shader } from "openarena-bsp-parser";
 import { dirname, join } from "path";
-import { Image, Dictionary } from "../types";
-import { Pk3StreamEntry, streamPk3Dir, tga2png } from "../utils";
+import { Pk3StreamEntry, Image, Dictionary } from "../types";
+import { streamPk3Dirs, tga2png } from "../utils";
 
 function stripExt(path: string) {
     const pos = path.lastIndexOf('.');
@@ -30,60 +30,26 @@ export class CacheManager {
     private textures: Dictionary<string> = {};
     private shaders: Dictionary<Shader> = {};
 
-    constructor(private cacheDir: string, private pk3Dir: string) {
+    constructor(private cacheDir: string, private pk3Dirs: string[] = []) {
+    }
+
+    public addPk3Dir(dir: string) {
+        this.pk3Dirs.push(dir);
     }
 
     public init(): Promise<void> {
         return new Promise((resolve, reject) => {
-            const stream = streamPk3Dir(this.pk3Dir, true);
-            stream
-                .on('entry', (entry: Pk3StreamEntry) => {
-                    let onError = (err: any) => reject(`Error in file '${entry.file}::${entry.path}': ${err}`);
-                    let matcher: RegExpMatchArray | null;
-                    if (matcher = CacheManager.PATTERN_MAP.exec(entry.path)) {
-                        const name = matcher[1];
-                        entry.wait = true;
-                        this.cacheMap(entry.path, entry.buffer)
-                            .then(file => {
-                                this.maps[name] = file;
-                                entry.next();
-                            })
-                            .catch(onError);
-                    } else if (CacheManager.PATTERN_TEXTURE.test(entry.path)) {
-                        entry.wait = true;
-                        this.cacheImage(entry.path, entry.buffer)
-                            .then(file => {
-                                this.textures[stripExt(entry.path)] = file;
-                                entry.next();
-                            })
-                            .catch(onError);
-                    } else if (matcher = CacheManager.PATTERN_LEVELSHOT.exec(entry.path)) {
-                        const name = matcher[1];
-                        entry.wait = true;
-                        this.cacheImage(entry.path, entry.buffer)
-                            .then(file => {
-                                this.levelshots[name] = file;
-                                entry.next();
-                            })
-                            .catch(onError);
-                    } else if (CacheManager.PATTERN_SHADER.test(entry.path)) {
-                        entry.buffer()
-                            .then(buf => {
-                                const shaders = parseShaderFile(buf.toString('utf8'));
-                                shaders.forEach(s => {
-                                    Object.assign(s, { file: entry.file, path: entry.path });
-                                    this.shaders[s.name] = s;
-                                });
-                            })
-                            .catch(onError);
-                    }
+            streamPk3Dirs(this.pk3Dirs, true)
+                .on('entry', entry => {
+                    this.cacheEntry(entry)
+                        .catch(err => reject(`Error in file '${entry.file}::${entry.path}': ${err}`));
                 })
-                .on('error', reject)
                 .on('close', () => {
                     this.initialized = true;
                     fs.writeFile(join(this.cacheDir, 'shaders.json'), JSON.stringify(Object.values(this.shaders), undefined, 2))
                         .then(resolve, reject);
-                });
+                })
+                .on('error', reject);
         });
     }
 
@@ -149,6 +115,35 @@ export class CacheManager {
         const name = matcher[1];
         const fileName = join(this.cacheDir, `maps/${name}.json`);
         return { name, fileName };
+    }
+
+    private async cacheEntry(entry: Pk3StreamEntry): Promise<void> {
+        let matcher: RegExpMatchArray | null;
+        if (matcher = CacheManager.PATTERN_MAP.exec(entry.path)) {
+            const name = matcher[1];
+            entry.wait = true;
+            const file = await this.cacheMap(entry.path, entry.buffer);
+            this.maps[name] = file;
+            entry.next();
+        } else if (CacheManager.PATTERN_TEXTURE.test(entry.path)) {
+            entry.wait = true;
+            const file = await this.cacheImage(entry.path, entry.buffer);
+            this.textures[stripExt(entry.path)] = file;
+            entry.next();
+        } else if (matcher = CacheManager.PATTERN_LEVELSHOT.exec(entry.path)) {
+            const name = matcher[1];
+            entry.wait = true;
+            const file = await this.cacheImage(entry.path, entry.buffer);
+            this.levelshots[name] = file;
+            entry.next();
+        } else if (CacheManager.PATTERN_SHADER.test(entry.path)) {
+            const buf = await entry.buffer();
+            const shaders = parseShaders(buf.toString('utf8'));
+            shaders.forEach(s => {
+                Object.assign(s, { file: entry.file, path: entry.path });
+                this.shaders[s.name] = s;
+            });
+        }
     }
 
     private async cacheMap(path: string, bufferLoader: () => Promise<Buffer>): Promise<string> {

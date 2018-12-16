@@ -2,24 +2,27 @@ import { Stream } from "stream";
 import { readdir, createReadStream } from "fs-extra";
 import * as unzip from 'unzipper';
 import { join } from "path";
+import { Pk3StreamEntry } from "../types";
 
 /**
+ * @param dirs Directories containing PK3 files. The directories must be in the same order
+ * @param ignoreDuplicates If a file is contained in multiple PK3 files, only the first is emitted.
  * 
  * events:
- *   files: array of files which will be proccesed
- *   file: this file is processed now
- *   close: all done
- *   error: something went wrong
+ *   files=string[]: Array of files which will be proccesed
+ *   file=string: This file is processed now
+ *   entry=Pk3StreamEntry: The processed entry
+ *   close=void: all done
+ *   error=any: something went wrong
  *   
  */
-export function streamPk3Dir(dir: string, ignoreDuplicates = true): Stream {
+export function streamPk3Dirs(dirs: string[], ignoreDuplicates = true): Stream {
     const stream = new Stream();
 
     const paths: string[] = [];
     const entries: ZipEntry[] = [];
-    readdir(dir).then(files => {
-        files = files.sort().reverse().filter(f => f.endsWith('.pk3'));
-        stream.emit('files', files);
+    getPk3Files(dirs).then(pk3Files => {
+        stream.emit('files', pk3Files);
         let index = 0;
         let wait = false;
         const nextEntry = () => {
@@ -64,10 +67,10 @@ export function streamPk3Dir(dir: string, ignoreDuplicates = true): Stream {
             }
         };
         const nextFile = () => {
-            const file = files[index++];
+            const file = pk3Files[index++];
             if (file) {
                 stream.emit('file', file);
-                createReadStream(join(dir, file))
+                createReadStream(file)
                     .pipe(unzip.Parse())
                     .on('entry', (e: unzip.Entry) => {
                         if (e.type === 'File') {
@@ -90,16 +93,21 @@ export function streamPk3Dir(dir: string, ignoreDuplicates = true): Stream {
     return stream;
 }
 
-interface ZipEntry extends unzip.Entry {
-    file: string;
+async function getPk3Files(dirs: string[]): Promise<string[]> {
+    const pk3Files: string[] = [];
+
+    for (const dir of dirs) {
+        const files = await readdir(dir);
+        pk3Files.push(...files //
+            .filter(f => f.endsWith('.pk3')) //
+            .sort() //
+            .reverse() //
+            .map(f => join(dir, f)));
+
+    }
+    return pk3Files;
 }
 
-export interface Pk3StreamEntry {
+interface ZipEntry extends unzip.Entry {
     file: string;
-    path: string;
-    // if this flag is set to true, the stream will wait util next() is called
-    wait: boolean;
-    buffer(): Promise<Buffer>;
-    // unblock the stream
-    next(): void;
 }
